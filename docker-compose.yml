@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  target:
+    image: user-target:latest
+    container_name: user-target
+    ports:
+      - "8085:8085"
+    volumes:
+      - logs:/app/logs  # 로그 저장장소(고정값)
+    restart: unless-stopped
+
+  forwarder:
+    image: yourrepo/mcp-forwarder:latest # 포워더 이미지를 원격에서 가져와 실행
+    container_name: mcp-forwarder
+    depends_on: [target]
+    volumes:
+      - logs:/logs:ro
+    environment:
+      MCP_INGEST_URL: "https://<MCP_DOMAIN>/api/servers/<SERVER_NAME>/ingest/logs" # MCP 서버 URL, 사용자님의 서버 이름으로 변경
+      MCP_TOKEN: "<INGEST_TOKEN>"  # 서버 등록 후 받은 토큰을 등록
+      LOG_PATH: "/logs/application.log"
+      START_AT_END: "true"
+      BATCH_MAX_LINES: "100"
+      FLUSH_INTERVAL_MS: "1000"
+      MAX_LINE_BYTES: "4096"
+      HTTP_TIMEOUT_MS: "5000"
+      BACKOFF_INITIAL_MS: "500"
+      BACKOFF_MAX_MS: "10000"
+    restart: unless-stopped
+
+volumes:
+  logs:
