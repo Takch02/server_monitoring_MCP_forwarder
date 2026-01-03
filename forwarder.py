@@ -11,10 +11,8 @@ def env(key, default=None):
     return default if v is None or str(v).strip() == "" else v.strip()
 
 def env_int(key, default):
-    try:
-        return int(env(key, str(default)))
-    except Exception:
-        return default
+    try: return int(env(key, str(default)))
+    except: return default
 
 def env_bool(key, default=True):
     v = env(key, "true" if default else "false").lower()
@@ -29,7 +27,7 @@ START_AT_END = env_bool("START_AT_END", True)
 BATCH_MAX_LINES = env_int("BATCH_MAX_LINES", 100)
 FLUSH_INTERVAL_MS = env_int("FLUSH_INTERVAL_MS", 1000)
 MAX_LINE_BYTES = env_int("MAX_LINE_BYTES", 4096)
-MAX_EVENT_BYTES = env_int("MAX_EVENT_BYTES", 32 * 1024)  # 이벤트 전체 메시지 최대
+MAX_EVENT_BYTES = env_int("MAX_EVENT_BYTES", 32 * 1024)
 
 HTTP_TIMEOUT_MS = env_int("HTTP_TIMEOUT_MS", 5000)
 BACKOFF_INITIAL_MS = env_int("BACKOFF_INITIAL_MS", 500)
@@ -38,20 +36,23 @@ BACKOFF_MAX_MS = env_int("BACKOFF_MAX_MS", 10000)
 if not MCP_INGEST_URL or not MCP_TOKEN or not LOG_PATH:
     raise SystemExit("MCP_INGEST_URL, MCP_TOKEN, LOG_PATH are required.")
 
-HEADERS = {
-    "Content-Type": "application/json",
-    "X-MCP-TOKEN": MCP_TOKEN,
-}
+HEADERS = { "Content-Type": "application/json", "X-MCP-TOKEN": MCP_TOKEN }
 
-# ---- 레드액션(간단 버전) ----
+# 민감 정보 마스킹
 REDACT_PATTERNS = [
-    # Authorization: Bearer xxxx
     (re.compile(r"(Authorization:\s*Bearer\s+)[A-Za-z0-9\-\._~\+\/]+=*", re.IGNORECASE), r"\1[REDACTED]"),
     (re.compile(r"(Bearer\s+)[A-Za-z0-9\-\._~\+\/]+=*", re.IGNORECASE), r"\1[REDACTED]"),
-    # token=, secret=, password= 류
     (re.compile(r"(\b(token|access_token|refresh_token|secret|password)\s*=\s*)[^\s&]+", re.IGNORECASE), r"\1[REDACTED]"),
     (re.compile(r'("?(token|access_token|refresh_token|secret|password)"?\s*:\s*)"?[^"\s,}]+', re.IGNORECASE), r'\1"[REDACTED]"'),
 ]
+
+# ★ 핵심 변경: 로그의 시작점(Timestamp)을 감지하는 정규식
+# Spring Log Format: 2026-01-03T21:46:06.098+09:00 ...
+# 날짜로 시작하면 "새로운 로그"로 판단합니다.
+LOG_START_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+# 레벨 파싱용 (이벤트 생성 시 사용)
+LEVEL_RE = re.compile(r"\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+")
 
 def redact(s: str) -> str:
     out = s
@@ -59,66 +60,33 @@ def redact(s: str) -> str:
         out = pat.sub(rep, out)
     return out
 
-# ---- Spring 로그 파싱 ----
-# 케이스1) "2026-01-03T20:35:52.751+09:00 ERROR ..."
-SPRING_PREFIX_RE = re.compile(
-    r"^(?P<iso>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+\-]\d{2}:\d{2}))\s+"
-    r"(?P<lvl>TRACE|DEBUG|INFO|WARN|ERROR)\b"
-)
-
-# 케이스2) "1767440152890 ERROR 2026-01-03T20:35:52.751+09:00 ERROR ..."
-DOUBLE_PREFIX_RE = re.compile(
-    r"^(?P<rid>\d+)\s+(?P<prefixLvl>TRACE|DEBUG|INFO|WARN|ERROR)\s+"
-    r"(?P<iso>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+\-]\d{2}:\d{2}))\s+"
-    r"(?P<lvl>TRACE|DEBUG|INFO|WARN|ERROR)\b"
-)
-
-def parse_iso_to_epoch_ms(iso: str) -> int:
-    # datetime.fromisoformat은 "+09:00" 형식 지원
+# ISO 8601 형식의 날짜 문자열을 밀리초 단위의 epoch 시간으로 변환
+def parse_iso_to_epoch_ms(iso_str: str) -> int:
     try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
         return int(dt.timestamp() * 1000)
-    except Exception:
+    except:
         return int(time.time() * 1000)
 
-def parse_level_and_ts(line: str):
+def extract_metadata(line: str):
     """
-    line에서 (ts_ms, level, requestId?)를 최대한 정확히 뽑는다.
+    로그 첫 줄에서 timestamp, level을 추출
     """
-    m2 = DOUBLE_PREFIX_RE.match(line)
-    if m2:
-        iso = m2.group("iso")
-        lvl = m2.group("lvl")  # 실제 레벨은 iso 뒤의 토큰을 우선
-        rid = m2.group("rid")
-        return parse_iso_to_epoch_ms(iso), lvl, rid
-
-    m1 = SPRING_PREFIX_RE.match(line)
-    if m1:
-        iso = m1.group("iso")
-        lvl = m1.group("lvl")
-        return parse_iso_to_epoch_ms(iso), lvl, None
-
-    # fallback
-    u = line.upper()
-    if " ERROR " in f" {u} " or u.startswith("ERROR") or "EXCEPTION" in u:
-        return int(time.time() * 1000), "ERROR", None
-    if " WARN " in f" {u} " or u.startswith("WARN") or "WARNING" in u:
-        return int(time.time() * 1000), "WARN", None
-    if " INFO " in f" {u} " or u.startswith("INFO"):
-        return int(time.time() * 1000), "INFO", None
-    return int(time.time() * 1000), "INFO", None
-
-def is_continuation(line: str) -> bool:
-    # 빈 줄은 무조건 continuation 처리하지 않음(엉뚱한 이벤트 붙는 부작용 방지)
-    if line == "":
-        return False
-    if line.startswith("at ") or line.startswith("\tat "):
-        return True
-    if line.startswith("Caused by:"):
-        return True
-    if line[0] in (" ", "\t"):
-        return True
-    return False
+    ts = int(time.time() * 1000)
+    lvl = "INFO"
+    
+    # Timestamp 추출 (ISO 포맷 가정)
+    # 공백으로 끊어서 첫번째 토큰이 날짜라고 가정
+    parts = line.split(' ', 1)
+    if len(parts) > 0 and LOG_START_RE.match(parts[0]):
+        ts = parse_iso_to_epoch_ms(parts[0])
+    
+    # Level 추출
+    m_lvl = LEVEL_RE.search(line)
+    if m_lvl:
+        lvl = m_lvl.group(1)
+        
+    return ts, lvl
 
 def open_file_wait(path: str):
     while True:
@@ -128,85 +96,64 @@ def open_file_wait(path: str):
                 f.seek(0, os.SEEK_END)
             return f
         except Exception as e:
-            print(f"[forwarder] log file not ready ({path}): {e}; retrying...")
-            time.sleep(0.5)
+            print(f"[forwarder] log file not ready ({path}); retrying...")
+            time.sleep(1)
 
 def file_signature(path: str):
     try:
         st = os.stat(path)
         return (st.st_ino, st.st_size)
-    except Exception:
+    except:
         return (None, None)
 
-def make_event_id(server_name: str, ts_ms: int, message: str, rid: str | None):
-    # 재시도/중복 대비용. (서버+시간+앞부분) 기반 해시
-    head = message[:512]
-    base = f"{server_name}|{ts_ms}|{rid or ''}|{head}"
+def make_event_id(server_name, ts, msg):
+    head = msg[:512]
+    base = f"{server_name}|{ts}|{head}"
     return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
 def send_with_retry(batch):
     body = json.dumps(batch, ensure_ascii=False)
     backoff = BACKOFF_INITIAL_MS / 1000.0
-    backoff_max = BACKOFF_MAX_MS / 1000.0
-
     while True:
         try:
-            resp = requests.post(
-                MCP_INGEST_URL,
-                headers=HEADERS,
-                data=body.encode("utf-8"),
-                timeout=HTTP_TIMEOUT_MS / 1000.0
-            )
-            if 200 <= resp.status_code < 300:
-                return
-            print(f"[forwarder] ingest failed: {resp.status_code} {resp.text[:200]}")
+            resp = requests.post(MCP_INGEST_URL, headers=HEADERS, data=body.encode("utf-8"), timeout=HTTP_TIMEOUT_MS/1000.0)
+            if 200 <= resp.status_code < 300: return
+            print(f"[forwarder] ingest failed: {resp.status_code}")
         except Exception as e:
             print(f"[forwarder] ingest error: {e}")
-
         time.sleep(backoff)
-        backoff = min(backoff * 2, backoff_max)
+        backoff = min(backoff * 2, BACKOFF_MAX_MS/1000.0)
 
 def main():
     f = open_file_wait(LOG_PATH)
     inode, _ = file_signature(LOG_PATH)
     current_offset = f.tell()
 
-    pending = None
+    pending = None # 현재 조립 중인 이벤트 {ts, level, message, ...}
     batch = []
     last_flush = time.time()
 
     def finalize_pending():
         nonlocal pending
-        if pending is None:
-            return None
-
-        # 이벤트 크기 제한
+        if pending is None: return None
+        
         msg = pending["message"]
         if len(msg.encode("utf-8")) > MAX_EVENT_BYTES:
-            # 너무 길면 tail을 자르되, 앞부분(원인) 우선 보존
-            cut = msg.encode("utf-8")[:MAX_EVENT_BYTES]
-            pending["message"] = cut.decode("utf-8", errors="replace") + "\n...(event truncated)"
-        # eventId 부여
-        pending["eventId"] = make_event_id(
-            pending["serverName"],
-            pending["ts"],
-            pending["message"],
-            pending.get("requestId")
-        )
-        out = pending
+            msg = msg[:MAX_EVENT_BYTES] + "\n...(truncated)"
+            
+        ev = {
+            "serverName": SERVER_NAME,
+            "ts": pending["ts"],
+            "level": pending["level"],
+            "message": msg,
+            "eventId": make_event_id(SERVER_NAME, pending["ts"], msg)
+        }
         pending = None
-        return out
+        return ev
 
-    def flush():
-        nonlocal batch, last_flush
-        ev = finalize_pending()
-        if ev is not None:
-            batch.append(ev)
-
-        if not batch:
-            last_flush = time.time()
-            return
-
+    def flush_batch():
+        nonlocal last_flush
+        if not batch: return
         send_with_retry(batch)
         print(f"[forwarder] sent {len(batch)} events")
         batch.clear()
@@ -215,58 +162,57 @@ def main():
     while True:
         line = f.readline()
         if not line:
-            time.sleep(0.2)
-
+            # 파일 로테이션 체크 로직 (생략 없이 유지)
+            time.sleep(0.1)
             new_inode, new_size = file_signature(LOG_PATH)
-            if new_size is not None and new_size < current_offset:
-                print("[forwarder] log truncated -> reopen")
+            if (new_size is not None and new_size < current_offset) or (inode and new_inode != inode):
+                print("[forwarder] log rotated.")
                 f.close()
-                f = open_file_wait(LOG_PATH)
+                f = open_file_wait(LOG_PATH) # 로테이션 시에는 처음부터 읽기
                 inode, _ = file_signature(LOG_PATH)
                 current_offset = f.tell()
-
-            elif inode is not None and new_inode is not None and new_inode != inode:
-                print("[forwarder] log rotated/replaced -> reopen")
-                f.close()
-                f = open(LOG_PATH, "r", encoding="utf-8", errors="replace")
-                inode, _ = file_signature(LOG_PATH)
-                current_offset = f.tell()
-
+                # 로테이션 시 펜딩 중인 것 강제 전송
+                ev = finalize_pending()
+                if ev: batch.append(ev)
+            
             if batch and (time.time() - last_flush) >= (FLUSH_INTERVAL_MS / 1000.0):
-                flush()
+                flush_batch()
             continue
 
         current_offset += len(line)
         line = line.rstrip("\r\n")
-
-        if len(line) > MAX_LINE_BYTES:
-            line = line[:MAX_LINE_BYTES] + "...(truncated)"
-
         line = redact(line)
 
-        # 멀티라인 합치기
-        if pending is not None and is_continuation(line):
-            pending["message"] += "\n" + line
-        else:
-            # 새 이벤트 시작 전, 기존 pending 확정
-            ev = finalize_pending()
-            if ev is not None:
-                batch.append(ev)
+        # ★ 로직 변경: "날짜로 시작하면 새 이벤트, 아니면 이어 붙이기"
+        is_new_start = LOG_START_RE.match(line)
 
-            ts_ms, lvl, rid = parse_level_and_ts(line)
+        if is_new_start:
+            # 기존 펜딩 마감
+            ev = finalize_pending()
+            if ev: batch.append(ev)
+            
+            # 새 이벤트 시작
+            ts, lvl = extract_metadata(line)
             pending = {
-                "serverName": SERVER_NAME,
-                "ts": ts_ms,
+                "ts": ts,
                 "level": lvl,
-                "requestId": rid,  # 있으면 활용
                 "message": line
             }
+        else:
+            # 날짜로 시작하지 않음 -> 이전 로그의 연속(Stack Trace 등)
+            if pending:
+                pending["message"] += "\n" + line
+            else:
+                # 펜딩이 없는데 날짜도 없는 줄이 옴 (파일 중간부터 읽었거나 이상한 로그)
+                # 그냥 무시하거나 임시로 만듦. 여기선 현재 시간으로 생성
+                pending = {
+                    "ts": int(time.time() * 1000),
+                    "level": "INFO",
+                    "message": line
+                }
 
         if len(batch) >= BATCH_MAX_LINES:
-            flush()
-
-        if batch and (time.time() - last_flush) >= (FLUSH_INTERVAL_MS / 1000.0):
-            flush()
+            flush_batch()
 
 if __name__ == "__main__":
     main()
