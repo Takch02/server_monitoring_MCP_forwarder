@@ -17,7 +17,7 @@ services:
     volumes:
       - logs:/logs:ro
     environment:
-      MCP_INGEST_URL: "https://${MCP_DOMAIN}/api/servers/${SERVER_NAME}/ingest/logs"
+      MCP_INGEST_URL: "${MCP_INGEST_URL}"
       MCP_TOKEN: "${INGEST_TOKEN}"
       LOG_PATH: "/logs/application.log"
       START_AT_END: "true"
