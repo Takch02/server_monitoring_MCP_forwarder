@@ -60,6 +60,7 @@ def send_metric(cpu, memory_used, memory_max):
         # 로그 보내던 곳과 같은 주소로 보내거나, 메트릭 전용 엔드포인트 사용
         # 여기서는 같은 URL을 쓴다고 가정 (MCP 서버가 type으로 구분해야 함)
         requests.post(MCP_METRIC_INGEST_URL, headers=HEADERS, json=[payload], timeout=3)
+        print("Metric 전송 완료")
         # print(f"[Metric] Sent: CPU={cpu}, Mem={mem_percent:.1f}%")
     except Exception as e:
         print(f"[Metric] Send failed: {e}")

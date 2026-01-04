@@ -155,7 +155,7 @@ def main():
         nonlocal last_flush
         if not batch: return
         send_with_retry(batch)
-        print(f"[forwarder] sent {len(batch)} events")
+        print(f"[forwarder]  {len(batch)} events를 보냈습니다.")
         batch.clear()
         last_flush = time.time()
 
