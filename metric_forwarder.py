@@ -7,7 +7,7 @@ import hashlib
 
 # --- 환경 설정 ---
 SERVER_NAME = os.getenv("SERVER_NAME", "unknown")
-MCP_INGEST_URL = os.getenv("MCP_INGEST_URL")
+MCP_METRIC_INGEST_URL = os.getenv("MCP_METRIC_INGEST_URL")
 MCP_TOKEN = os.getenv("MCP_TOKEN")
 # Docker Compose에서 설정한 URL (예: http://target:9090/actuator/metrics)
 ACTUATOR_BASE_URL = os.getenv("ACTUATOR_URL") 
@@ -59,7 +59,7 @@ def send_metric(cpu, memory_used, memory_max):
     try:
         # 로그 보내던 곳과 같은 주소로 보내거나, 메트릭 전용 엔드포인트 사용
         # 여기서는 같은 URL을 쓴다고 가정 (MCP 서버가 type으로 구분해야 함)
-        requests.post(MCP_INGEST_URL, headers=HEADERS, json=[payload], timeout=3)
+        requests.post(MCP_METRIC_INGEST_URL, headers=HEADERS, json=[payload], timeout=3)
         # print(f"[Metric] Sent: CPU={cpu}, Mem={mem_percent:.1f}%")
     except Exception as e:
         print(f"[Metric] Send failed: {e}")

@@ -18,7 +18,7 @@ def env_bool(key, default=True):
     v = env(key, "true" if default else "false").lower()
     return v in ("1", "true", "yes", "y")
 
-MCP_INGEST_URL = env("MCP_INGEST_URL")
+MCP_LOG_INGEST_URL = env("MCP_LOG_INGEST_URL")
 MCP_TOKEN = env("MCP_TOKEN")
 LOG_PATH = env("LOG_PATH")
 SERVER_NAME = env("SERVER_NAME", "unknown")
@@ -33,8 +33,8 @@ HTTP_TIMEOUT_MS = env_int("HTTP_TIMEOUT_MS", 5000)
 BACKOFF_INITIAL_MS = env_int("BACKOFF_INITIAL_MS", 500)
 BACKOFF_MAX_MS = env_int("BACKOFF_MAX_MS", 10000)
 
-if not MCP_INGEST_URL or not MCP_TOKEN or not LOG_PATH:
-    raise SystemExit("MCP_INGEST_URL, MCP_TOKEN, LOG_PATH are required.")
+if not MCP_LOG_INGEST_URL or not MCP_TOKEN or not LOG_PATH:
+    raise SystemExit("MCP_LOG_INGEST_URL, MCP_TOKEN, LOG_PATH are required.")
 
 HEADERS = { "Content-Type": "application/json", "X-MCP-TOKEN": MCP_TOKEN }
 
@@ -116,7 +116,7 @@ def send_with_retry(batch):
     backoff = BACKOFF_INITIAL_MS / 1000.0
     while True:
         try:
-            resp = requests.post(MCP_INGEST_URL, headers=HEADERS, data=body.encode("utf-8"), timeout=HTTP_TIMEOUT_MS/1000.0)
+            resp = requests.post(MCP_LOG_INGEST_URL, headers=HEADERS, data=body.encode("utf-8"), timeout=HTTP_TIMEOUT_MS/1000.0)
             if 200 <= resp.status_code < 300: return
             print(f"[forwarder] ingest failed: {resp.status_code}")
         except Exception as e:

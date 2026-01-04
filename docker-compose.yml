@@ -17,7 +17,8 @@ services:
     volumes:
       - logs:/logs:ro
     environment:
-      MCP_INGEST_URL: "${MCP_INGEST_URL}"
+      MCP_LOG_INGEST_URL: "${MCP_LOG_INGEST_URL}"  # LOG 수집용 URL
+      MCP_METRIC_INGEST_URL: "${MCP_METRIC_INGEST_URL}"  # METRIC 수집용 URL
       MCP_TOKEN: "${INGEST_TOKEN}"
       LOG_PATH: "/logs/application.log"
       START_AT_END: "true"
