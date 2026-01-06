@@ -9,14 +9,14 @@ import hashlib
 SERVER_NAME = os.getenv("SERVER_NAME", "unknown")
 MCP_METRIC_INGEST_URL = os.getenv("MCP_METRIC_INGEST_URL")
 MCP_TOKEN = os.getenv("MCP_TOKEN")
-USER_KAKAO_TOKEN = os.getenv("USER_KAKAO_TOKEN", "")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 ACTUATOR_BASE_URL = os.getenv("ACTUATOR_URL") 
 COLLECT_INTERVAL = int(os.getenv("METRIC_INTERVAL", "10")) # 10초마다 수집
 
 HEADERS = {
     "Content-Type": "application/json",
     "X-MCP-TOKEN": MCP_TOKEN,  # 서버 인식 헤더
-    "X-USER-KAKAO-TOKEN": USER_KAKAO_TOKEN  # 카카오 메시지 토큰 헤더 (선택사항)
+    "X-DISCORD-WEBHOOK-URL": DISCORD_WEBHOOK_URL  # 디스코드 웹훅 URL 헤더 (선택사항)
 }
 
 def get_actuator_value(metric_name):

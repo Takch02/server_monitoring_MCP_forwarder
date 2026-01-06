@@ -20,7 +20,7 @@ def env_bool(key, default=True):
 
 MCP_LOG_INGEST_URL = env("MCP_LOG_INGEST_URL")
 MCP_TOKEN = env("MCP_TOKEN")
-USER_KAKAO_TOKEN = env("USER_KAKAO_TOKEN", "")
+DISCORD_WEBHOOK_URL = env("DISCORD_WEBHOOK_URL", "")
 LOG_PATH = env("LOG_PATH")
 SERVER_NAME = env("SERVER_NAME", "unknown")
 
@@ -40,7 +40,7 @@ if not MCP_LOG_INGEST_URL or not MCP_TOKEN or not LOG_PATH:
 HEADERS = { 
     "Content-Type": "application/json",
     "X-MCP-TOKEN": MCP_TOKEN,  # 서버 인식 헤더
-    "X-USER-KAKAO-TOKEN": USER_KAKAO_TOKEN  # 카카오 메시지 토큰 헤더 (선택사항)
+    "X-DISCORD-WEBHOOK-URL": DISCORD_WEBHOOK_URL  # 디스코드 웹훅 URL 헤더 (선택사항)
 }
 
 # 민감 정보 마스킹
