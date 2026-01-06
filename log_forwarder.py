@@ -20,6 +20,7 @@ def env_bool(key, default=True):
 
 MCP_LOG_INGEST_URL = env("MCP_LOG_INGEST_URL")
 MCP_TOKEN = env("MCP_TOKEN")
+USER_KAKAO_TOKEN = env("USER_KAKAO_TOKEN", "")
 LOG_PATH = env("LOG_PATH")
 SERVER_NAME = env("SERVER_NAME", "unknown")
 
@@ -36,7 +37,11 @@ BACKOFF_MAX_MS = env_int("BACKOFF_MAX_MS", 10000)
 if not MCP_LOG_INGEST_URL or not MCP_TOKEN or not LOG_PATH:
     raise SystemExit("MCP_LOG_INGEST_URL, MCP_TOKEN, LOG_PATH are required.")
 
-HEADERS = { "Content-Type": "application/json", "X-MCP-TOKEN": MCP_TOKEN }
+HEADERS = { 
+    "Content-Type": "application/json",
+    "X-MCP-TOKEN": MCP_TOKEN,  # 서버 인식 헤더
+    "X-USER-KAKAO-TOKEN": USER_KAKAO_TOKEN  # 카카오 메시지 토큰 헤더 (선택사항)
+}
 
 # 민감 정보 마스킹
 REDACT_PATTERNS = [
@@ -114,15 +119,18 @@ def make_event_id(server_name, ts, msg):
 def send_with_retry(batch):
     body = json.dumps(batch, ensure_ascii=False)
     backoff = BACKOFF_INITIAL_MS / 1000.0
-    while True:
-        try:
-            resp = requests.post(MCP_LOG_INGEST_URL, headers=HEADERS, data=body.encode("utf-8"), timeout=HTTP_TIMEOUT_MS/1000.0)
-            if 200 <= resp.status_code < 300: return
-            print(f"[forwarder] ingest failed: {resp.status_code}")
-        except Exception as e:
-            print(f"[forwarder] ingest error: {e}")
-        time.sleep(backoff)
-        backoff = min(backoff * 2, BACKOFF_MAX_MS/1000.0)
+    try :
+        while True:
+            try:
+                resp = requests.post(MCP_LOG_INGEST_URL, headers=HEADERS, data=body.encode("utf-8"), timeout=HTTP_TIMEOUT_MS/1000.0)
+                if 200 <= resp.status_code < 300: return
+                print(f"[forwarder] ingest failed: {resp.status_code}")
+            except Exception as e:
+                print(f"[forwarder] ingest error: {e}")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, BACKOFF_MAX_MS/1000.0)
+    except Exception as e:
+        print(f"[forwarder] 전송 중 오류 발생 : {e}")
 
 def main():
     f = open_file_wait(LOG_PATH)

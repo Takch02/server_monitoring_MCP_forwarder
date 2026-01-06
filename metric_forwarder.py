@@ -9,13 +9,14 @@ import hashlib
 SERVER_NAME = os.getenv("SERVER_NAME", "unknown")
 MCP_METRIC_INGEST_URL = os.getenv("MCP_METRIC_INGEST_URL")
 MCP_TOKEN = os.getenv("MCP_TOKEN")
-# Docker Compose에서 설정한 URL (예: http://target:9090/actuator/metrics)
+USER_KAKAO_TOKEN = os.getenv("USER_KAKAO_TOKEN", "")
 ACTUATOR_BASE_URL = os.getenv("ACTUATOR_URL") 
 COLLECT_INTERVAL = int(os.getenv("METRIC_INTERVAL", "10")) # 10초마다 수집
 
 HEADERS = {
     "Content-Type": "application/json",
-    "X-MCP-TOKEN": MCP_TOKEN,
+    "X-MCP-TOKEN": MCP_TOKEN,  # 서버 인식 헤더
+    "X-USER-KAKAO-TOKEN": USER_KAKAO_TOKEN  # 카카오 메시지 토큰 헤더 (선택사항)
 }
 
 def get_actuator_value(metric_name):
@@ -63,7 +64,7 @@ def send_metric(cpu, memory_used, memory_max):
         print("Metric 전송 완료")
         # print(f"[Metric] Sent: CPU={cpu}, Mem={mem_percent:.1f}%")
     except Exception as e:
-        print(f"[Metric] Send failed: {e}")
+        print(f"[Metric] 전송 중 오류 발생 : {e}")
 
 def main():
     if not ACTUATOR_BASE_URL:
