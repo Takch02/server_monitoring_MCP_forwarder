@@ -8,6 +8,7 @@ RUN pip install requests
 # 파일 3개 모두 복사
 COPY log_forwarder.py .
 COPY metric_forwarder.py .
+COPY health_forwarder.py .
 COPY main.py .
 
 # 로그 즉시 출력
