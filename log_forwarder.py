@@ -3,6 +3,9 @@ import time
 import json
 import re
 import hashlib
+import queue
+import threading
+import random
 from datetime import datetime
 import requests
 
@@ -33,6 +36,13 @@ MAX_EVENT_BYTES = env_int("MAX_EVENT_BYTES", 32 * 1024)
 HTTP_TIMEOUT_MS = env_int("HTTP_TIMEOUT_MS", 5000)
 BACKOFF_INITIAL_MS = env_int("BACKOFF_INITIAL_MS", 500)
 BACKOFF_MAX_MS = env_int("BACKOFF_MAX_MS", 10000)
+LOG_QUEUE_MAX_BATCHES = env_int("LOG_QUEUE_MAX_BATCHES", 300)  # 메모리 허용치
+DROP_AFTER_S = 60.0  # 1분 지나면 드랍
+
+
+send_q = queue.Queue(maxsize=LOG_QUEUE_MAX_BATCHES)  # batch 전송에 실패 시 Queue에 넣음 (메모리에 임시 저장)
+stop_event = threading.Event()
+
 
 if not MCP_LOG_INGEST_URL or not MCP_TOKEN or not LOG_PATH:
     raise SystemExit("MCP_LOG_INGEST_URL, MCP_TOKEN, LOG_PATH are required.")
@@ -58,6 +68,35 @@ LOG_START_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 
 # 레벨 파싱용 (이벤트 생성 시 사용)
 LEVEL_RE = re.compile(r"\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+")
+
+def enqueue_drop_oldest(batch):
+    while True:
+        try:
+            send_q.put_nowait(batch)
+            return True
+        except queue.Full:
+            try:
+                send_q.get_nowait()   # 가장 오래된 배치 버림
+                send_q.task_done()
+                print("[forwarder] queue full -> drop oldest batch")
+            except queue.Empty:
+                continue
+
+def sender_loop():
+    while not stop_event.is_set():
+        try:
+            batch = send_q.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        try:
+            send_with_retry(batch)   # 실패하면 내부에서 계속 재시도
+        finally:
+            send_q.task_done()
+
+def start_sender_thread():
+    t = threading.Thread(target=sender_loop, daemon=True)
+    t.start()
+
 
 def redact(s: str) -> str:
     out = s
@@ -116,23 +155,50 @@ def make_event_id(server_name, ts, msg):
     base = f"{server_name}|{ts}|{head}"
     return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
+# 배치 전송 함수
+# 재전송 로직을 추가
+# 1분간 재시도 후 드랍
 def send_with_retry(batch):
-    body = json.dumps(batch, ensure_ascii=False)
+    body = json.dumps(batch, ensure_ascii=False).encode("utf-8")
     backoff = BACKOFF_INITIAL_MS / 1000.0
-    try :
-        while True:
-            try:
-                resp = requests.post(MCP_LOG_INGEST_URL, headers=HEADERS, data=body.encode("utf-8"), timeout=HTTP_TIMEOUT_MS/1000.0)
-                if 200 <= resp.status_code < 300: return
-                print(f"[forwarder] ingest failed: {resp.status_code}")
-            except Exception as e:
-                print(f"[forwarder] ingest error: {e}")
-            time.sleep(backoff)
-            backoff = min(backoff * 2, BACKOFF_MAX_MS/1000.0)
-    except Exception as e:
-        print(f"[forwarder] 전송 중 오류 발생 : {e}")
+    backoff_max = BACKOFF_MAX_MS / 1000.0
+    timeout_s = HTTP_TIMEOUT_MS / 1000.0
+    deadline = time.time() + DROP_AFTER_S
+    
+    while True:
+        try:
+            resp = requests.post(
+                MCP_LOG_INGEST_URL,
+                headers=HEADERS,
+                data=body,
+                timeout=timeout_s
+            )
+            # 1분 초과면 드랍
+            if time.time() >= deadline:
+                print(f"[forwarder] drop batch after {DROP_AFTER_S:.0f}s retry (size={len(batch)})")
+                return
+            
+            if 200 <= resp.status_code < 300:
+                return
+
+            # 4xx(429 제외)는 재시도 의미 없음 -> 드랍
+            if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                print(f"[forwarder] rejected {resp.status_code}: {resp.text[:200]}")
+                return
+
+            print(f"[forwarder] ingest failed: {resp.status_code}")
+
+        except Exception as e:
+            print(f"[forwarder] ingest error: {e}")
+
+        # 남은 시간 안에서만 sleep
+        sleep_s = min(backoff, max(0.0, deadline - time.time()))
+        time.sleep(sleep_s * random.uniform(0.7, 1.3))  # 지터
+        backoff = min(backoff * 2, backoff_max)
+
 
 def main():
+    start_sender_thread()  # 전송 로직은 별도 스레드에서 처리
     f = open_file_wait(LOG_PATH)
     inode, _ = file_signature(LOG_PATH)
     current_offset = f.tell()
@@ -159,11 +225,12 @@ def main():
         pending = None
         return ev
 
+    # flush 는 재전송이 아닌 batch 를 큐에 넣기만 함
     def flush_batch():
         nonlocal last_flush
         if not batch: return
-        send_with_retry(batch)
-        print(f"[forwarder]  {len(batch)} events를 보냈습니다.")
+        enqueue_drop_oldest(batch.copy())
+        print(f"[forwarder] queued {len(batch)} events")
         batch.clear()
         last_flush = time.time()
 
