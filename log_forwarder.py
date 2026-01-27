@@ -181,6 +181,7 @@ def send_with_retry(batch):
             )
             
             if 200 <= resp.status_code < 300:
+                print(f"[forwarder] {len(batch)} batch sent successfully")
                 return
 
             # 4xx(429 제외)는 재시도 의미 없음 -> 드랍
