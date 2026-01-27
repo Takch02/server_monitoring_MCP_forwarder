@@ -89,7 +89,19 @@ def sender_loop():
         except queue.Empty:
             continue
         try:
-            send_with_retry(batch)   # 실패하면 내부에서 계속 재시도
+            r = send_with_retry(batch)   # 실패하면 내부에서 계속 재시도
+            
+            if r is True:
+                print(f"[forwarder] {len(batch)} batch sent successfully")
+
+            elif r is False:
+                # ✅ 60초 동안 실패 -> 버리지 말고 뒤로 다시 넣기
+                enqueue_drop_oldest(batch)
+                time.sleep(0.2)
+
+            else:
+                # None: 4xx 같은 영구 실패 -> 버림
+                pass
         finally:
             send_q.task_done()
 
@@ -170,7 +182,7 @@ def send_with_retry(batch):
         now = time.time()
         if now >= deadline:
             print(f"[forwarder] drop batch after {DROP_AFTER_S:.0f}s retry (size={len(batch)})")
-            return
+            return False
         
         try:
             resp = requests.post(
@@ -181,13 +193,12 @@ def send_with_retry(batch):
             )
             
             if 200 <= resp.status_code < 300:
-                print(f"[forwarder] {len(batch)} batch sent successfully")
-                return
+                return True
 
             # 4xx(429 제외)는 재시도 의미 없음 -> 드랍
             if 400 <= resp.status_code < 500 and resp.status_code != 429:
                 print(f"[forwarder] rejected {resp.status_code}: {resp.text[:200]}")
-                return
+                return None
 
             print(f"[forwarder] ingest failed: {resp.status_code}")
 
@@ -197,7 +208,8 @@ def send_with_retry(batch):
         remaining = deadline - time.time()
         if remaining <= 0:
             print(f"[forwarder] drop batch after {DROP_AFTER_S:.0f}s retry (size={len(batch)})")
-            return
+            return False
+        
         # 남은 시간 안에서만 sleep
         sleep_s = min(backoff, max(0.0, deadline - time.time()))
         time.sleep(sleep_s * random.uniform(0.7, 1.3))  # 지터
