@@ -166,6 +166,12 @@ def send_with_retry(batch):
     deadline = time.time() + DROP_AFTER_S
     
     while True:
+        
+        now = time.time()
+        if now >= deadline:
+            print(f"[forwarder] drop batch after {DROP_AFTER_S:.0f}s retry (size={len(batch)})")
+            return
+        
         try:
             resp = requests.post(
                 MCP_LOG_INGEST_URL,
@@ -173,10 +179,6 @@ def send_with_retry(batch):
                 data=body,
                 timeout=timeout_s
             )
-            # 1분 초과면 드랍
-            if time.time() >= deadline:
-                print(f"[forwarder] drop batch after {DROP_AFTER_S:.0f}s retry (size={len(batch)})")
-                return
             
             if 200 <= resp.status_code < 300:
                 return
@@ -191,6 +193,10 @@ def send_with_retry(batch):
         except Exception as e:
             print(f"[forwarder] ingest error: {e}")
 
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            print(f"[forwarder] drop batch after {DROP_AFTER_S:.0f}s retry (size={len(batch)})")
+            return
         # 남은 시간 안에서만 sleep
         sleep_s = min(backoff, max(0.0, deadline - time.time()))
         time.sleep(sleep_s * random.uniform(0.7, 1.3))  # 지터
