@@ -95,9 +95,8 @@ def sender_loop():
                 print(f"[forwarder] {len(batch)} batch sent successfully")
 
             elif r is False:
-                # ✅ 60초 동안 실패 -> 버리지 말고 뒤로 다시 넣기
-                enqueue_drop_oldest(batch)
-                time.sleep(0.2)
+                # 로그의 최신성을 위해 timeout이 지나면 로그를 버림
+                print("[forwarder] batch dropped after retries")
 
             else:
                 # None: 4xx 같은 영구 실패 -> 버림
@@ -270,8 +269,15 @@ def main():
                 ev = finalize_pending()
                 if ev: batch.append(ev)
             
+            # 마지막 flush 이후 1초가 지나면 pending의 로그도 batch로 보냄
             if batch and (time.time() - last_flush) >= (FLUSH_INTERVAL_MS / 1000.0):
-                flush_batch()
+                if pending:
+                    ev = finalize_pending()
+                    if ev: batch.append(ev)
+                
+                # batch에 데이터가 있다면 즉시 전송 큐로 넘김
+                if batch:
+                    flush_batch()
             continue
 
         current_offset += len(line)
