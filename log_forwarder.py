@@ -33,7 +33,7 @@ FLUSH_INTERVAL_MS = env_int("FLUSH_INTERVAL_MS", 1000)
 MAX_LINE_BYTES = env_int("MAX_LINE_BYTES", 4096)
 MAX_EVENT_BYTES = env_int("MAX_EVENT_BYTES", 32 * 1024)
 
-HTTP_TIMEOUT_MS = env_int("HTTP_TIMEOUT_MS", 5000)
+HTTP_TIMEOUT_MS = env_int("HTTP_TIMEOUT_MS", 15000)
 BACKOFF_INITIAL_MS = env_int("BACKOFF_INITIAL_MS", 500)
 BACKOFF_MAX_MS = env_int("BACKOFF_MAX_MS", 10000)
 LOG_QUEUE_MAX_BATCHES = env_int("LOG_QUEUE_MAX_BATCHES", 300)  # 메모리 허용치
@@ -162,6 +162,7 @@ def file_signature(path: str):
     except:
         return (None, None)
 
+# SHA1 해시로 이벤트 ID 생성(멱등성 보장)
 def make_event_id(server_name, ts, msg):
     head = msg[:512]
     base = f"{server_name}|{ts}|{head}"
