@@ -28,12 +28,12 @@ LOG_PATH = env("LOG_PATH")
 SERVER_NAME = env("SERVER_NAME", "unknown")
 
 START_AT_END = env_bool("START_AT_END", True)
-BATCH_MAX_LINES = env_int("BATCH_MAX_LINES", 10)
+BATCH_MAX_LINES = env_int("BATCH_MAX_LINES", 100)
 FLUSH_INTERVAL_MS = env_int("FLUSH_INTERVAL_MS", 1000)
 MAX_LINE_BYTES = env_int("MAX_LINE_BYTES", 4096)
 MAX_EVENT_BYTES = env_int("MAX_EVENT_BYTES", 32 * 1024)
 
-HTTP_TIMEOUT_MS = env_int("HTTP_TIMEOUT_MS", 15000)
+HTTP_TIMEOUT_MS = env_int("HTTP_TIMEOUT_MS", 5000)
 BACKOFF_INITIAL_MS = env_int("BACKOFF_INITIAL_MS", 500)
 BACKOFF_MAX_MS = env_int("BACKOFF_MAX_MS", 10000)
 LOG_QUEUE_MAX_BATCHES = env_int("LOG_QUEUE_MAX_BATCHES", 300)  # 메모리 허용치
@@ -257,7 +257,6 @@ def main():
         line = f.readline()
         if not line:
             # 파일 로테이션 체크 로직 (생략 없이 유지)
-            time.sleep(0.1)
             new_inode, new_size = file_signature(LOG_PATH)
             if (new_size is not None and new_size < current_offset) or (inode and new_inode != inode):
                 print("[forwarder] log rotated.")
