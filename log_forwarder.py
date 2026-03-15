@@ -269,7 +269,7 @@ def main():
                 if ev: batch.append(ev)
             
             # 마지막 flush 이후 1초가 지나면 pending의 로그도 batch로 보냄
-            if batch and (time.time() - last_flush) >= (FLUSH_INTERVAL_MS / 1000.0):
+            if (batch or pending) and (time.time() - last_flush) >= (FLUSH_INTERVAL_MS / 1000.0):
                 if pending:
                     ev = finalize_pending()
                     if ev: batch.append(ev)
@@ -277,6 +277,7 @@ def main():
                 # batch에 데이터가 있다면 즉시 전송 큐로 넘김
                 if batch:
                     flush_batch()
+            time.sleep(0.05)
             continue
 
         current_offset += len(line)
