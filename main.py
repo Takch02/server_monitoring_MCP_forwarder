@@ -1,50 +1,42 @@
-# main.py
+import json
+import os
 import threading
 import time
-import os
 
-# 기존 파일들을 모듈로 불러옵니다
-import log_forwarder as forwarder 
+import log_forwarder as forwarder
 import metric_forwarder as metric
 import health_forwarder as health
+from forwarder_status import STATUS, run_worker, write_status
 
-def run_log_forwarder():
-    print("🚀 [Main] Starting Log Forwarder...")
-    try:
-        forwarder.main()
-    except Exception as e:
-        print(f"❌ [Main] Log Forwarder crashed: {e}")
 
-def run_metric_collector():
-    print("🚀 [Main] Starting Metric Collector...")
-    try:
-        metric.main()
-    except Exception as e:
-        print(f"❌ [Main] Metric Collector crashed: {e}")
-
-def run_health_collector():
-    print("🚀 [Main] Starting Health Collector...")
-    try:
-        health.main()
-    except Exception as e:
-        print(f"❌ [Main] Health Collector crashed: {e}")
-
-if __name__ == "__main__":
-    # 스레드 1: 로그 수집 (무한루프)
-    t1 = threading.Thread(target=run_log_forwarder, daemon=True)
-    t1.start()
-
-    # 스레드 2: 메트릭 수집 (무한루프)
-    t2 = threading.Thread(target=run_metric_collector, daemon=True)
-    t2.start()
-
-    # 스레드 3: 헬스 체크 (무한루프)
-    t3 = threading.Thread(target=run_health_collector, daemon=True)
-    t3.start()
-
-    # 메인 프로세스가 죽지 않게 대기
+def main():
+    stop_event = threading.Event()
+    collectors = [
+        ('logs', forwarder.main, bool(os.getenv('LOG_PATH'))),
+        ('metrics', metric.main, bool(os.getenv('ACTUATOR_URL'))),
+        ('health', health.main, bool(os.getenv('HEALTH_URL'))),
+    ]
+    logs_enabled = collectors[0][2]
+    STATUS.update('log_sender', enabled=logs_enabled, state='starting' if logs_enabled else 'disabled')
+    for name, target, enabled in collectors:
+        STATUS.update(name, enabled=enabled, state='starting' if enabled else 'disabled')
+        if enabled:
+            thread = threading.Thread(target=run_worker, args=(name, target, stop_event), daemon=True)
+            thread.start()
+    if not any(enabled for _, _, enabled in collectors):
+        raise SystemExit('수집 대상이 설정되지 않았습니다.')
+    path = os.getenv('FORWARDER_STATUS_PATH', '/tmp/forwarder-status.json')
+    interval = max(1, int(os.getenv('FORWARDER_STATUS_INTERVAL', '10')))
     try:
         while True:
-            time.sleep(1)
+            snapshot = STATUS.snapshot()
+            write_status(path, snapshot)
+            print('[forwarder-status] ' + json.dumps(snapshot, ensure_ascii=False), flush=True)
+            time.sleep(interval)
     except KeyboardInterrupt:
-        print("🛑 [Main] Stopping...")
+        stop_event.set()
+        forwarder.stop_event.set()
+
+
+if __name__ == '__main__':
+    main()

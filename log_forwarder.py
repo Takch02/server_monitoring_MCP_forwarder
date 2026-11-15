@@ -5,9 +5,9 @@ import re
 import hashlib
 import queue
 import threading
-import random
 from datetime import datetime
-import requests
+from delivery import post_json
+from forwarder_status import STATUS, run_worker
 
 def env(key, default=None):
     v = os.getenv(key)
@@ -44,8 +44,6 @@ send_q = queue.Queue(maxsize=LOG_QUEUE_MAX_BATCHES)  # batch 전송에 실패 �
 stop_event = threading.Event()
 
 
-if not MCP_LOG_INGEST_URL or not MCP_TOKEN or not LOG_PATH:
-    raise SystemExit("MCP_LOG_INGEST_URL, MCP_TOKEN, LOG_PATH are required.")
 
 HEADERS = { 
     "Content-Type": "application/json",
@@ -76,7 +74,8 @@ def enqueue_drop_oldest(batch):
             return True
         except queue.Full:
             try:
-                send_q.get_nowait()   # 가장 오래된 배치 버림
+                dropped = send_q.get_nowait()
+                STATUS.event('logs', 'dropped', len(dropped), 'queue_full')
                 send_q.task_done()
                 print("[forwarder] queue full -> drop oldest batch")
             except queue.Empty:
@@ -84,6 +83,7 @@ def enqueue_drop_oldest(batch):
 
 def sender_loop():
     while not stop_event.is_set():
+        STATUS.event('log_sender', 'poll')
         try:
             batch = send_q.get(timeout=0.5)
         except queue.Empty:
@@ -105,7 +105,7 @@ def sender_loop():
             send_q.task_done()
 
 def start_sender_thread():
-    t = threading.Thread(target=sender_loop, daemon=True)
+    t = threading.Thread(target=run_worker, args=('log_sender', sender_loop, stop_event), daemon=True)
     t.start()
 
 
@@ -145,12 +145,14 @@ def extract_metadata(line: str):
 
 def open_file_wait(path: str):
     while True:
+        STATUS.event('logs', 'poll')
         try:
             f = open(path, "r", encoding="utf-8", errors="replace")
             if START_AT_END:
                 f.seek(0, os.SEEK_END)
             return f
         except Exception as e:
+            STATUS.event('logs', 'collection_failed', reason='log_file_unavailable')
             print(f"[forwarder] log file not ready ({path}); retrying...")
             time.sleep(1)
 
@@ -171,52 +173,20 @@ def make_event_id(server_name, ts, msg):
 # 재전송 로직을 추가
 # 1분간 재시도 후 드랍
 def send_with_retry(batch):
-    body = json.dumps(batch, ensure_ascii=False).encode("utf-8")
-    backoff = BACKOFF_INITIAL_MS / 1000.0
-    backoff_max = BACKOFF_MAX_MS / 1000.0
-    timeout_s = HTTP_TIMEOUT_MS / 1000.0
-    deadline = time.time() + DROP_AFTER_S
-    
-    while True:
-        
-        now = time.time()
-        if now >= deadline:
-            print(f"[forwarder] drop batch after {DROP_AFTER_S:.0f}s retry (size={len(batch)})")
-            return False
-        
-        try:
-            resp = requests.post(
-                MCP_LOG_INGEST_URL,
-                headers=HEADERS,
-                data=body,
-                timeout=timeout_s
-            )
-            
-            if 200 <= resp.status_code < 300:
-                return True
-
-            # 4xx(429 제외)는 재시도 의미 없음 -> 드랍
-            if 400 <= resp.status_code < 500 and resp.status_code != 429:
-                print(f"[forwarder] rejected {resp.status_code}: {resp.text[:200]}")
-                return None
-
-            print(f"[forwarder] ingest failed: {resp.status_code}")
-
-        except Exception as e:
-            print(f"[forwarder] ingest error: {e}")
-
-        remaining = deadline - time.time()
-        if remaining <= 0:
-            print(f"[forwarder] drop batch after {DROP_AFTER_S:.0f}s retry (size={len(batch)})")
-            return False
-        
-        # 남은 시간 안에서만 sleep
-        sleep_s = min(backoff, max(0.0, deadline - time.time()))
-        time.sleep(sleep_s * random.uniform(0.7, 1.3))  # 지터
-        backoff = min(backoff * 2, backoff_max)
+    result = post_json('logs', MCP_LOG_INGEST_URL, HEADERS, batch, count=len(batch),
+                       timeout=HTTP_TIMEOUT_MS / 1000.0, max_attempts=None,
+                       retry_seconds=DROP_AFTER_S, initial_backoff=BACKOFF_INITIAL_MS / 1000.0,
+                       max_backoff=BACKOFF_MAX_MS / 1000.0)
+    if result.success:
+        return True
+    return None if result.reason in ('authentication_failed', 'configuration_error') or (
+        result.status_code is not None and result.status_code not in (408, 429)
+        and result.status_code < 500) else False
 
 
 def main():
+    if not MCP_LOG_INGEST_URL or not MCP_TOKEN or not LOG_PATH:
+        raise ValueError('로그 경로, 전송 주소와 토큰이 필요합니다.')
     start_sender_thread()  # 전송 로직은 별도 스레드에서 처리
     f = open_file_wait(LOG_PATH)
     inode, _ = file_signature(LOG_PATH)
@@ -242,6 +212,7 @@ def main():
             "eventId": make_event_id(SERVER_NAME, pending["ts"], msg)
         }
         pending = None
+        STATUS.event('logs', 'collected', 1)
         return ev
 
     # flush 는 재전송이 아닌 batch 를 큐에 넣기만 함
@@ -254,7 +225,9 @@ def main():
         last_flush = time.time()
 
     while True:
+        STATUS.event('logs', 'poll')
         line = f.readline()
+        STATUS.event('logs', 'collected', 0)
         if not line:
             # 파일 로테이션 체크 로직 (생략 없이 유지)
             new_inode, new_size = file_signature(LOG_PATH)
