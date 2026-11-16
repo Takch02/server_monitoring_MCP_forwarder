@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
+import requests
+
 import delivery
 from forwarder_status import StatusRegistry, healthy
 
@@ -23,6 +25,7 @@ class PipelineTest(unittest.TestCase):
         self.codes = []
         self.status_received = []
         self.status_codes = []
+        self.metrics_failure_reported = None
         self.delay = 0
         fixture = self
 
@@ -42,11 +45,19 @@ class PipelineTest(unittest.TestCase):
             def do_POST(self):
                 body = self.rfile.read(int(self.headers['Content-Length']))
                 if self.path.endswith('/forwarder-status'):
-                    fixture.status_received.append(json.loads(body))
+                    report = json.loads(body)
+                    fixture.status_received.append(report)
+                    if (fixture.metrics_failure_reported is not None
+                            and report['streams']['metrics']['last_send_error'] == 'authentication_failed'):
+                        fixture.metrics_failure_reported.set()
                     code = fixture.status_codes.pop(0) if fixture.status_codes else 200
                 else:
                     fixture.received.append(json.loads(body))
-                    code = fixture.codes.pop(0) if fixture.codes else 200
+                    if self.path.endswith('/metrics') and fixture.metrics_failure_reported is not None:
+                        # 실패 보고가 수신되기 전에 수집기가 복구 상태로 바뀌지 않게 한다.
+                        code = 200 if fixture.metrics_failure_reported.is_set() else 401
+                    else:
+                        code = fixture.codes.pop(0) if fixture.codes else 200
                 if fixture.delay:
                     time.sleep(fixture.delay)
                 self.reply(code, b'{}')
@@ -181,8 +192,24 @@ class PipelineTest(unittest.TestCase):
             time.sleep(0.02)
         self.fail('Expected report not received: ' + repr(self.status_received))
 
+    def test_인증실패보고를_받기전까지_지표요청에_401을_유지한다(self):
+        self.metrics_failure_reported = threading.Event()
+
+        def post(path, payload):
+            with requests.post(self.url + path, json=payload, timeout=2) as response:
+                return response.status_code
+
+        for _ in range(3):
+            self.assertEqual(post('/ingest/metrics', {}), 401)
+        post('/ingest/forwarder-status', {'streams': {'metrics': {'last_send_error': None}}})
+        self.assertEqual(post('/ingest/metrics', {}), 401)
+        post('/ingest/forwarder-status',
+             {'streams': {'metrics': {'last_send_error': 'authentication_failed'}}})
+        self.assertTrue(self.metrics_failure_reported.is_set())
+        self.assertEqual(post('/ingest/metrics', {}), 200)
+
     def test_실제프로세스의_수집실패를_독립보고하고_복구후_최신상태로_교체한다(self):
-        self.codes = [401]
+        self.metrics_failure_reported = threading.Event()
         self.process('metrics', report_status=True)
         reports = self.wait_reports(lambda values: any(value['streams']['metrics']['last_send_error'] == 'authentication_failed' for value in values))
         failed = next(value for value in reports if value['streams']['metrics']['last_send_error'] == 'authentication_failed')
