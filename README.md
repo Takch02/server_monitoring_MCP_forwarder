@@ -95,5 +95,7 @@ python -m unittest discover -s tests -v
 ```
 
 `python test_forwarder.py`로도 같은 테스트를 실행할 수 있습니다.
+TLS CA 번들은 `certifi>=2026.10.18`을 요구합니다. 이전 이미지는 새 의존성으로 다시 빌드해야 합니다.
+
 HTTP 모의 응답과 localhost의 임시 HTTP 서버·파일·별도 프로세스를 사용합니다. 운영 수신 API와 DB에는 연결하지 않습니다.
 테스트는 인증 오류, 재시도·복구·시간 초과, 빈 로그 파일, 스레드 종료, 로그 읽기부터 HTTP 수신·상태 파일·헬스체크까지 검증합니다.
