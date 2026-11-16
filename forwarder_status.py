@@ -1,6 +1,7 @@
 """수집과 전송의 상태를 구분해 기록한다. 원문·토큰·URL은 저장하지 않는다."""
 import copy
 import json
+import math
 import os
 import threading
 import time
@@ -79,6 +80,12 @@ def write_status(path, snapshot):
     os.replace(temporary, path)
 
 
+def poll_stale_limit(interval_seconds=0, collection_budget=0, retry_budget=15, request_timeout=3):
+    # 순차 수집·전송·정상 대기에 스케줄링 여유를 더한다.
+    minimum = max(1, int(os.getenv('FORWARDER_STALE_SECONDS', '75')))
+    return max(minimum, interval_seconds + collection_budget + retry_budget + request_timeout + 10)
+
+
 def healthy(snapshot, now=None, stale_seconds=75):
     now = time.time() if now is None else now
     age = now - snapshot['updated_at']
@@ -89,7 +96,8 @@ def healthy(snapshot, now=None, stale_seconds=75):
         return False
     for stream in enabled:
         poll = stream['last_poll_at']
-        if stream['state'] != 'running' or poll is None or not 0 <= now - poll <= stale_seconds:
+        poll_limit = max(stale_seconds, stream.get('poll_stale_seconds', stale_seconds))
+        if not math.isfinite(poll_limit) or stream['state'] != 'running' or poll is None or not 0 <= now - poll <= poll_limit:
             return False
         if stream['last_collection_error'] or stream['last_send_error']:
             return False

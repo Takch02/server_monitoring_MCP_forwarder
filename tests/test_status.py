@@ -71,6 +71,31 @@ class StatusTest(unittest.TestCase):
         self.assertFalse(state.healthy(old, now=self.now[0]))
         self.assertFalse(self.healthy())
 
+    def test_긴수집주기의_정상대기는_스트림최신성한계까지_허용한다(self):
+        self.running('health')
+        self.registry.update('health', poll_stale_seconds=212)
+        self.now[0] += 180
+        self.assertTrue(self.healthy())
+        self.now[0] += 33
+        self.assertFalse(self.healthy())
+
+    def test_수집주기와_요청예산으로_최신성한계를_계산한다(self):
+        with patch.dict(os.environ, {'FORWARDER_STALE_SECONDS': '75'}):
+            self.assertEqual(state.poll_stale_limit(180, collection_budget=4), 212)
+            self.assertEqual(state.poll_stale_limit(180, collection_budget=12), 220)
+            self.assertEqual(state.poll_stale_limit(10, collection_budget=12), 75)
+        with patch.dict(os.environ, {'FORWARDER_STALE_SECONDS': '300'}):
+            self.assertEqual(state.poll_stale_limit(180, collection_budget=4), 300)
+
+    def test_긴수집주기도_오래된상태파일과_스레드실패를_정상으로_가리지않는다(self):
+        self.running('health')
+        self.registry.update('health', poll_stale_seconds=212)
+        old = self.registry.snapshot()
+        self.now[0] += 100
+        self.assertFalse(state.healthy(old, now=self.now[0]))
+        self.registry.update('health', state='failed')
+        self.assertFalse(self.healthy())
+
     def test_수집실패와_전송실패는_복구후_해제된다(self):
         self.running()
         self.registry.event('metrics', 'collection_failed', reason='missing_metric')
