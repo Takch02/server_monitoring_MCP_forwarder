@@ -47,7 +47,10 @@ def main():
     try:
         while True:
             snapshot = STATUS.snapshot()
-            write_status(path, snapshot)
+            try:
+                write_status(path, snapshot)
+            except OSError as error:
+                print('[forwarder-status] write_failed: ' + type(error).__name__, flush=True)
             print('[forwarder-status] ' + json.dumps(snapshot, ensure_ascii=False), flush=True)
             time.sleep(interval)
     except KeyboardInterrupt:
