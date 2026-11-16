@@ -21,6 +21,8 @@ class PipelineTest(unittest.TestCase):
     def setUp(self):
         self.received = []
         self.codes = []
+        self.status_received = []
+        self.status_codes = []
         self.delay = 0
         fixture = self
 
@@ -39,8 +41,12 @@ class PipelineTest(unittest.TestCase):
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers['Content-Length']))
-                fixture.received.append(json.loads(body))
-                code = fixture.codes.pop(0) if fixture.codes else 200
+                if self.path.endswith('/forwarder-status'):
+                    fixture.status_received.append(json.loads(body))
+                    code = fixture.status_codes.pop(0) if fixture.status_codes else 200
+                else:
+                    fixture.received.append(json.loads(body))
+                    code = fixture.codes.pop(0) if fixture.codes else 200
                 if fixture.delay:
                     time.sleep(fixture.delay)
                 self.reply(code, b'{}')
@@ -68,7 +74,7 @@ class PipelineTest(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=2)
 
-    def process(self, source, token='test-token'):
+    def process(self, source, token='test-token', report_status=False):
         log = Path(self.directory.name) / 'application.log'
         log.write_text('2026-11-15T00:00:00.000Z ERROR test failure\n'
                        'java.lang.RuntimeException: expected\n\tat Example.run(Example.java:1)\n'
@@ -81,6 +87,8 @@ class PipelineTest(unittest.TestCase):
                    MCP_LOG_INGEST_URL=self.url + '/ingest/logs',
                    MCP_METRIC_INGEST_URL=self.url + '/ingest/metrics',
                    MCP_HEALTH_INGEST_URL=self.url + '/ingest/health',
+                   MCP_FORWARDER_STATUS_INGEST_URL=self.url + '/ingest/forwarder-status' if report_status else '',
+                   FORWARDER_REPORT_INTERVAL='1', FORWARDER_VERSION='integration-test',
                    DISCORD_WEBHOOK_URL='', START_AT_END='false', FLUSH_INTERVAL_MS='50',
                    METRIC_INTERVAL='1', HEALTH_INTERVAL='1', FORWARDER_STATUS_INTERVAL='1',
                    FORWARDER_STATUS_PATH=str(self.path), NO_PROXY='127.0.0.1,localhost')
@@ -164,3 +172,42 @@ class PipelineTest(unittest.TestCase):
         self.assertIsNone(process.poll())
         self.assertFalse(healthy(snapshot))
         self.assertEqual(self.received, [])
+
+    def wait_reports(self, predicate):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if predicate(self.status_received):
+                return self.status_received
+            time.sleep(0.02)
+        self.fail('Expected report not received: ' + repr(self.status_received))
+
+    def test_실제프로세스의_수집실패를_독립보고하고_복구후_최신상태로_교체한다(self):
+        self.codes = [401]
+        self.process('metrics', report_status=True)
+        reports = self.wait_reports(lambda values: any(value['streams']['metrics']['last_send_error'] == 'authentication_failed' for value in values))
+        failed = next(value for value in reports if value['streams']['metrics']['last_send_error'] == 'authentication_failed')
+        reports = self.wait_reports(lambda values: any(value['sequence'] > failed['sequence'] and value['streams']['metrics']['last_send_error'] is None and value['streams']['metrics']['sent_items'] > 0 for value in values))
+        recovered = reports[-1]
+        self.assertEqual(recovered['run_id'], failed['run_id'])
+        self.assertGreaterEqual(recovered['streams']['metrics']['dropped_items'], 1)
+        self.assertEqual(set(recovered['streams']), {'logs', 'log_sender', 'metrics', 'health'})
+
+    def test_상태API가_실패해도_로그전송과_로컬검사는_계속된다(self):
+        self.status_codes = [500] * 20
+        self.process('logs', report_status=True)
+        snapshot = self.wait_status(lambda value: value['streams']['logs']['sent_items'] >= 2)
+        self.wait_reports(lambda values: len(values) >= 2)
+        self.assertTrue(healthy(snapshot))
+        self.assertEqual(snapshot['streams']['logs']['dropped_items'], 0)
+        self.assertEqual(len(self.received), 1)
+
+    def test_프로세스재시작은_새실행ID를_사용한다(self):
+        process = self.process('health', report_status=True)
+        first = self.wait_reports(lambda values: len(values) >= 1)[0]
+        self.stop_process(process)
+        self.status_received.clear()
+        self.process('health', report_status=True)
+        second = self.wait_reports(lambda values: len(values) >= 1)[0]
+        self.assertNotEqual(first['run_id'], second['run_id'])
+        self.assertEqual(second['sequence'], 1)
+        self.assertGreater(second['started_at'], first['started_at'])

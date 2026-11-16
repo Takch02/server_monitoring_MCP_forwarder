@@ -13,6 +13,7 @@ COPY health_forwarder.py .
 COPY main.py .
 COPY delivery.py .
 COPY forwarder_status.py .
+COPY status_reporter.py .
 COPY healthcheck.py .
 
 # 로그 즉시 출력

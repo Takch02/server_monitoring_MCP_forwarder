@@ -56,8 +56,31 @@ docker inspect --format '{{json .State.Health}}' <컨테이너명>
 | `FORWARDER_STALE_SECONDS` | `75`초 |
 
 Docker는 15초마다 검사하고 연속 3회 실패 시 `unhealthy`로 표시합니다. 시작 유예는 30초입니다.
-`unhealthy` 표시만으로 Docker가 자동 재시작하지는 않습니다. 스레드 재시작·중앙 서버 상태 전송·외부 알림은 별도 연동이 필요합니다.
+`unhealthy` 표시만으로 Docker가 자동 재시작하지는 않습니다. 스레드 자동 재시작과 외부 알림은 별도 연동이 필요합니다. 중앙 서버 상태 전송은 아래 설정으로 활성화합니다.
 로그 큐는 상한 도달 시 오래된 배치를 폐기합니다. 무손실·재시작 후 복구·이벤트 식별 방식 보완은 이번 변경의 보장 범위가 아닙니다.
+
+## 중앙 상태 보고
+
+`MCP_FORWARDER_STATUS_INGEST_URL`을 설정하면 별도 스레드가 기본 15초마다 현재 상태를 보냅니다.
+기존의 로컬 상태 파일과 컨테이너 검사는 유지됩니다. 주소를 설정하지 않으면 중앙 보고만 비활성화됩니다.
+
+```yaml
+environment:
+  SERVER_NAME: "${SERVER_NAME}"
+  MCP_TOKEN: "${INGEST_TOKEN}"
+  MCP_FORWARDER_STATUS_INGEST_URL: "${MCP_DOMAIN}/api/servers/${SERVER_NAME}/ingest/forwarder-status"
+  FORWARDER_REPORT_INTERVAL: "15"
+  FORWARDER_VERSION: "v1.0.0" # 실제 이미지 태그 또는 커밋으로 변경
+```
+
+- 서버의 상태 수신 API를 먼저 배포해야 합니다. `get_forwarder_status`와 `diagnose_server`에서 확인할 수 있습니다.
+- 기존 `streams`에 실행 UUID·시작 시각·보고 순번·버전·로그 큐 배치 수/용량을 추가합니다. 스키마 버전은 1입니다.
+- `FORWARDER_VERSION`을 지정하지 않으면 `unknown`입니다. 토큰·주소·원문은 보고 본문에 넣지 않습니다.
+- 보고는 로그 큐를 사용하지 않으며 각 주기에 한 번만 전송합니다. 실패하면 `[status-report]`에 원인 코드를 출력하고 다음 주기에 최신 상태를 보냅니다.
+- 상태 보고 자체의 전송 결과는 `STATUS.streams`에 추가하지 않습니다. 보고 실패가 수집 상태를 재귀적으로 오염시키지 않습니다.
+- 상태 전송이 실패해도 로그·지표·Health 전송과 로컬 검사는 계속됩니다. 다만 중앙에서는 기본 75초 후 수집 상태를 확인할 수 없다고 표시합니다.
+- 한 서버 이름에는 활성 Forwarder 하나를 사용합니다. 실행 순서는 호스트 시작 시각으로 비교하므로 재시작 때 시계가 뒤로 이동하면 시간 동기화를 확인해야 합니다.
+- `OK`는 활성 수집기의 현재 동작 상태이며 앱 정상이나 과거 전체 수집을 보장하지 않습니다. 로그가 없는 것과 로그 수집 실패를 구분하는 근거입니다.
 
 ## 테스트
 

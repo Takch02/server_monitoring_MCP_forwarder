@@ -18,13 +18,17 @@ class DeliveryResult:
 
 
 def post_json(stream, url, headers, payload, count=1, timeout=3, max_attempts=3,
-              retry_seconds=15, initial_backoff=0.5, max_backoff=10):
+              retry_seconds=15, initial_backoff=0.5, max_backoff=10, record_status=True):
+    def record(kind, amount=0, reason=None):
+        if record_status:
+            STATUS.event(stream, kind, amount, reason)
+
     attempts = 0
     reason = 'configuration_error'
     code = None
     if not url or not headers.get('X-MCP-TOKEN'):
-        STATUS.event(stream, 'send_failed', reason=reason)
-        STATUS.event(stream, 'dropped', count, reason)
+        record('send_failed', reason=reason)
+        record('dropped', count, reason)
         return DeliveryResult(False, reason, attempts)
     body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode('utf-8')
     deadline = time.monotonic() + retry_seconds
@@ -45,7 +49,7 @@ def post_json(stream, url, headers, payload, count=1, timeout=3, max_attempts=3,
             finally:
                 response.close()
             if 200 <= code < 300:
-                STATUS.event(stream, 'sent', count)
+                record('sent', count)
                 return DeliveryResult(True, 'sent', attempts, code)
             reason = 'authentication_failed' if code in (401, 403) else 'http_' + str(code)
             retryable = code in (408, 429) or 500 <= code < 600
@@ -56,7 +60,7 @@ def post_json(stream, url, headers, payload, count=1, timeout=3, max_attempts=3,
         except requests.RequestException:
             reason = 'request_error'
             retryable = False
-        STATUS.event(stream, 'send_failed', reason=reason)
+        record('send_failed', reason=reason)
         if not retryable or (max_attempts is not None and attempts >= max_attempts):
             break
         remaining = deadline - time.monotonic()
@@ -64,5 +68,5 @@ def post_json(stream, url, headers, payload, count=1, timeout=3, max_attempts=3,
             break
         time.sleep(min(backoff * random.uniform(0.7, 1.3), remaining))
         backoff = min(backoff * 2, max_backoff)
-    STATUS.event(stream, 'dropped', count, reason)
+    record('dropped', count, reason)
     return DeliveryResult(False, reason, attempts, code)
