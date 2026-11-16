@@ -55,6 +55,14 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(state['sent_items'], 0)
         self.assertEqual(state['last_send_error'], 'authentication_failed')
 
+    def test_JSON본문의_형식헤더를_추가하고_호출자헤더는_변경하지않는다(self):
+        headers = {'X-MCP-TOKEN': 'test'}
+        with patch.object(delivery.requests, 'post', return_value=response(200)) as post:
+            delivery.post_json('metrics', 'http://example.invalid', headers, {'value': 1})
+        self.assertEqual(post.call_args.kwargs['headers']['Content-Type'], 'application/json')
+        self.assertEqual(post.call_args.kwargs['headers']['X-MCP-TOKEN'], 'test')
+        self.assertEqual(headers, {'X-MCP-TOKEN': 'test'})
+
     def test_성공응답만_전송건수에_반영한다(self):
         with patch.object(delivery.requests, 'post', return_value=response(204)):
             self.assertTrue(self.post(count=5).success)

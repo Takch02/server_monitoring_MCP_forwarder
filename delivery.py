@@ -30,6 +30,7 @@ def post_json(stream, url, headers, payload, count=1, timeout=3, max_attempts=3,
         record('send_failed', reason=reason)
         record('dropped', count, reason)
         return DeliveryResult(False, reason, attempts)
+    headers = {'Content-Type': 'application/json', **headers}
     body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode('utf-8')
     deadline = time.monotonic() + retry_seconds
     backoff = initial_backoff

@@ -14,6 +14,7 @@ from unittest.mock import patch
 import requests
 
 import delivery
+import status_reporter
 from forwarder_status import StatusRegistry, healthy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +45,9 @@ class PipelineTest(unittest.TestCase):
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers['Content-Length']))
+                if self.headers.get_content_type() != 'application/json':
+                    self.reply(415, b'{}')
+                    return
                 if self.path.endswith('/forwarder-status'):
                     report = json.loads(body)
                     fixture.status_received.append(report)
@@ -129,6 +133,15 @@ class PipelineTest(unittest.TestCase):
                 pass
             time.sleep(0.05)
         self.fail('Expected status not observed: ' + repr(last))
+
+    def test_상태보고는_JSON형식을_요구하는_실제HTTP서버에_전송된다(self):
+        with patch.object(status_reporter, 'INGEST_URL', self.url + '/ingest/forwarder-status'), \
+             patch.object(status_reporter, 'TOKEN', 'test-token'):
+            result = status_reporter.report_once(1)
+        self.assertTrue(result.success)
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(len(self.status_received), 1)
+        self.assertEqual(self.status_received[0]['sequence'], 1)
 
     def test_실제HTTP에서_500후_같은본문으로_복구한다(self):
         self.codes = [500, 200]
