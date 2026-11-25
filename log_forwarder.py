@@ -164,9 +164,9 @@ def file_signature(path: str):
         return (None, None)
 
 # SHA1 해시로 이벤트 ID 생성(멱등성 보장)
-def make_event_id(server_name, ts, msg):
+def make_event_id(server_name, ts, msg, inode, offset):
     head = msg[:512]
-    base = f"{server_name}|{ts}|{head}"
+    base = f"{server_name}|{inode}|{offset}|{ts}|{head}"
     return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
 # 배치 전송 함수
@@ -189,7 +189,7 @@ def main():
         raise ValueError('로그 경로, 전송 주소와 토큰이 필요합니다.')
     start_sender_thread()  # 전송 로직은 별도 스레드에서 처리
     f = open_file_wait(LOG_PATH)
-    inode, _ = file_signature(LOG_PATH)
+    inode = os.fstat(f.fileno()).st_ino
     current_offset = f.tell()
 
     pending = None # 현재 조립 중인 이벤트 {ts, level, message, ...}
@@ -209,7 +209,7 @@ def main():
             "ts": pending["ts"],
             "level": pending["level"],
             "message": msg,
-            "eventId": make_event_id(SERVER_NAME, pending["ts"], msg)
+            "eventId": make_event_id(SERVER_NAME, pending["ts"], msg, pending["inode"], pending["offset"])
         }
         pending = None
         STATUS.event('logs', 'collected', 1)
@@ -235,7 +235,7 @@ def main():
                 print("[forwarder] log rotated.")
                 f.close()
                 f = open_file_wait(LOG_PATH) # 로테이션 시에는 처음부터 읽기
-                inode, _ = file_signature(LOG_PATH)
+                inode = os.fstat(f.fileno()).st_ino
                 current_offset = f.tell()
                 # 로테이션 시 펜딩 중인 것 강제 전송
                 ev = finalize_pending()
@@ -253,7 +253,8 @@ def main():
             time.sleep(0.05)
             continue
 
-        current_offset += len(line)
+        line_offset = current_offset
+        current_offset = f.tell()
         line = line.rstrip("\r\n")
         line = redact(line)
 
@@ -269,6 +270,8 @@ def main():
             ts, lvl = extract_metadata(line)
             pending = {
                 "ts": ts,
+                "inode": inode,
+                "offset": line_offset,
                 "level": lvl,
                 "message": line
             }
@@ -281,6 +284,8 @@ def main():
                 # 그냥 무시하거나 임시로 만듦. 여기선 현재 시간으로 생성
                 pending = {
                     "ts": int(time.time() * 1000),
+                    "inode": inode,
+                    "offset": line_offset,
                     "level": "INFO",
                     "message": line
                 }
